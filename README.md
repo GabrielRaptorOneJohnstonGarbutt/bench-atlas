@@ -28,6 +28,22 @@ http://127.0.0.1:8000
 
 The app uses SQLite locally by default. If `DATABASE_URL` is set, it will use Postgres instead.
 
+## Android / Play Store readiness
+
+The app now includes the core Progressive Web App pieces needed for Android installation and Play Store packaging:
+
+- `manifest.webmanifest` for install metadata
+- `sw.js` for app-shell caching
+- installable app icons in `icons/`
+- an in-app install entry on the Account page
+
+That means the live site can behave like an installable Android app. The remaining Play Store work is outside the app code:
+
+1. Keep the live site served over HTTPS.
+2. Verify the PWA install flow on Android Chrome.
+3. Wrap the live site with a Trusted Web Activity or Android shell for Play Store submission.
+4. Add Play Console listing assets such as screenshots, feature graphic, privacy policy, and store description.
+
 ## Google sign-in setup
 
 To enable Google login, set these environment variables before starting the server:
@@ -74,6 +90,8 @@ To publish on Render:
 3. Set `GOOGLE_CLIENT_ID` in the Render environment if you want cross-device Google sign-in.
 4. In Google Cloud OAuth settings, add your final Render URL as an authorized JavaScript origin.
 5. Deploy and open the public URL.
+
+For Android install testing, use the deployed URL in Chrome on Android and confirm the app installs cleanly from the browser.
 
 ## Data model
 

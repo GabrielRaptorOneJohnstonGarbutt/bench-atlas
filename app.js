@@ -15,6 +15,7 @@ const state = {
   draftFlyImageData: "",
   cameraStream: null,
   currentPage: "atlas",
+  installPrompt: null,
   auth: {
     configured: false,
     googleClientId: "",
@@ -88,6 +89,8 @@ const elements = {
   accountPageLogoutButton: document.querySelector("#account-page-logout-button"),
   googleAuthSlot: document.querySelector("#google-auth-slot"),
   accountPageAuthSlot: document.querySelector("#account-page-auth-slot"),
+  installAppButton: document.querySelector("#install-app-button"),
+  installStatus: document.querySelector("#install-status"),
   template: document.querySelector("#material-card-template"),
   rebuyTemplate: document.querySelector("#rebuy-item-template"),
   flyTemplate: document.querySelector("#fly-card-template"),
@@ -100,11 +103,13 @@ initialize().catch((error) => {
 
 async function initialize() {
   attachEvents();
+  registerServiceWorker();
   updateSegmentedState(elements.typeFilterGroup, "[data-type-filter]", state.activeTypeFilter);
   updateSegmentedState(elements.locationTypeGroup, "[data-location-type]", elements.locationTypeInput.value);
   syncLocationNamePlaceholder(elements.locationTypeInput.value);
   renderImagePreview("");
   renderFlyImagePreview("");
+  updateInstallState();
   syncPageFromHash();
   await loadAuthConfig();
   await refreshData();
@@ -112,6 +117,8 @@ async function initialize() {
 
 function attachEvents() {
   window.addEventListener("hashchange", syncPageFromHash);
+  window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+  window.addEventListener("appinstalled", handleAppInstalled);
 
   elements.navLinks.forEach((link) => {
     link.addEventListener("click", () => {
@@ -202,6 +209,7 @@ function attachEvents() {
 
   elements.logoutButton.addEventListener("click", logout);
   elements.accountPageLogoutButton.addEventListener("click", logout);
+  elements.installAppButton.addEventListener("click", installApp);
 
   elements.materialForm.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -914,6 +922,68 @@ function syncLocationNamePlaceholder(locationType) {
     "Travel Kit": "Travel Kit"
   };
   input.placeholder = placeholderByType[locationType] || "Storage location";
+}
+
+async function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) {
+    return;
+  }
+
+  try {
+    await navigator.serviceWorker.register("/sw.js");
+  } catch {
+    // PWA support is helpful but should never block the inventory app.
+  }
+}
+
+function handleBeforeInstallPrompt(event) {
+  event.preventDefault();
+  state.installPrompt = event;
+  updateInstallState();
+}
+
+function handleAppInstalled() {
+  state.installPrompt = null;
+  updateInstallState("Bench Atlas is installed on this device.");
+}
+
+async function installApp() {
+  if (!state.installPrompt) {
+    updateInstallState("Open this live site in Chrome on Android and use Add to Home screen.");
+    return;
+  }
+
+  try {
+    await state.installPrompt.prompt();
+    await state.installPrompt.userChoice;
+  } finally {
+    state.installPrompt = null;
+    updateInstallState();
+  }
+}
+
+function updateInstallState(message = "") {
+  const isStandalone = window.matchMedia?.("(display-mode: standalone)")?.matches || window.navigator.standalone;
+  const canInstall = Boolean(state.installPrompt) && !isStandalone;
+
+  elements.installAppButton.classList.toggle("install-button--hidden", !canInstall);
+
+  if (message) {
+    elements.installStatus.textContent = message;
+    return;
+  }
+
+  if (isStandalone) {
+    elements.installStatus.textContent = "Bench Atlas is already installed and can be opened from your home screen.";
+    return;
+  }
+
+  if (canInstall) {
+    elements.installStatus.textContent = "Bench Atlas is ready to install on this device.";
+    return;
+  }
+
+  elements.installStatus.textContent = "If the install button is not available yet, open the live site in Chrome on Android and use Add to Home screen.";
 }
 
 async function fetchJson(url, options = {}) {

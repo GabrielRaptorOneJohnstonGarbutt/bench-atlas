@@ -4,6 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Fly Tying Materials Tracker</title>
+  <meta name="theme-color" content="#1f2f28">
+  <meta name="description" content="Bench Atlas keeps your fly tying materials, storage spots, recipes, and rebuy list organized on any device.">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-512.svg">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -376,6 +381,22 @@
             <button id="account-page-logout-button" type="button" class="ghost-button ghost-button--hidden">Sign out</button>
             <p id="auth-config-message" class="helper-copy">
               If Google sign-in is not configured yet, the app will keep working in guest mode on this device.
+            </p>
+          </section>
+
+          <section class="card">
+            <div class="section-header">
+              <div>
+                <p class="section-tag">Install</p>
+                <h3>Add Bench Atlas to your phone</h3>
+              </div>
+            </div>
+            <p class="helper-copy">
+              Install Bench Atlas on Android so it launches like an app and is ready for Play Store style packaging.
+            </p>
+            <button id="install-app-button" type="button" class="primary-button install-button install-button--hidden">Install Bench Atlas</button>
+            <p id="install-status" class="helper-copy">
+              If the install button is not available yet, open the live site in Chrome on Android and use Add to Home screen.
             </p>
           </section>
 

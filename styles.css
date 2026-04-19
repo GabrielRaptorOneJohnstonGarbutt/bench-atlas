@@ -386,6 +386,10 @@ textarea:focus {
   display: none;
 }
 
+.install-button--hidden {
+  display: none;
+}
+
 .results-grid {
   grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
 }

@@ -1,0 +1,32 @@
+{
+  "name": "Bench Atlas",
+  "short_name": "Bench Atlas",
+  "description": "Track fly tying materials, storage spots, recipe ingredients, and rebuy items from one mobile-friendly app.",
+  "start_url": "/#atlas",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#efe7da",
+  "theme_color": "#1f2f28",
+  "orientation": "portrait-primary",
+  "categories": ["productivity", "sports", "lifestyle"],
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icons/icon-512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
