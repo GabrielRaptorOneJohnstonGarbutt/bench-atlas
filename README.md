@@ -26,6 +26,8 @@ Then open:
 http://127.0.0.1:8000
 ```
 
+The app uses SQLite locally by default. If `DATABASE_URL` is set, it will use Postgres instead.
+
 ## Google sign-in setup
 
 To enable Google login, set these environment variables before starting the server:
@@ -49,7 +51,8 @@ This app can be published as a single-instance web service.
 Current deployment notes:
 
 - The app now supports `HOST`, `PORT`, `APP_DATA_DIR`, and `DB_PATH` environment variables for production hosting.
-- SQLite is fine for a simple first public release, but it should run as a single instance with persistent disk storage.
+- The app also supports `DATABASE_URL` for Postgres, which is the better fit for free-tier Render hosting.
+- SQLite is still the local default for simple development on your own machine.
 - Google sign-in will only work in production after you add your deployed site URL to the allowed origins in your Google Cloud OAuth settings.
 
 ### Render
@@ -59,7 +62,8 @@ This project includes a [render.yaml](C:/Users/25gea/Documents/Codex/2026-04-18-
 What it does:
 
 - Runs the app as a Python web service.
-- Stores SQLite data on a persistent disk.
+- Provisions a free Render Postgres database.
+- Connects the web service to that database with `DATABASE_URL`.
 - Adds a health check at `/api/config`.
 - Generates a production session secret automatically.
 
@@ -67,10 +71,9 @@ To publish on Render:
 
 1. Push this project to GitHub.
 2. In Render, create a new Blueprint service from that repo.
-3. Keep the persistent disk enabled.
-4. Set `GOOGLE_CLIENT_ID` in the Render environment if you want cross-device Google sign-in.
-5. In Google Cloud OAuth settings, add your final Render URL as an authorized JavaScript origin.
-6. Deploy and open the public URL.
+3. Set `GOOGLE_CLIENT_ID` in the Render environment if you want cross-device Google sign-in.
+4. In Google Cloud OAuth settings, add your final Render URL as an authorized JavaScript origin.
+5. Deploy and open the public URL.
 
 ## Data model
 

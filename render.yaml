@@ -2,18 +2,20 @@ services:
   - type: web
     name: bench-atlas
     runtime: python
-    plan: starter
+    plan: free
     autoDeploy: true
     healthCheckPath: /api/config
+    buildCommand: pip install -r requirements.txt
     startCommand: python server.py
-    disk:
-      name: bench-atlas-data
-      mountPath: /opt/render/project/src/data
-      sizeGB: 1
     envVars:
-      - key: APP_DATA_DIR
-        value: /opt/render/project/src/data
       - key: SESSION_SECRET
         generateValue: true
       - key: GOOGLE_CLIENT_ID
         sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: bench-atlas-db
+          property: connectionString
+databases:
+  - name: bench-atlas-db
+    plan: free

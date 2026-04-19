@@ -5,6 +5,7 @@ import hmac
 import json
 import mimetypes
 import os
+import re
 import secrets
 import sqlite3
 import urllib.error
@@ -18,16 +19,25 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except ImportError:
+    psycopg = None
+    dict_row = None
+
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("APP_DATA_DIR", str(BASE_DIR / "data"))).resolve()
 DB_PATH = Path(os.environ.get("DB_PATH", str(DATA_DIR / "fly_tying.db"))).resolve()
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 HOST = os.environ.get("HOST", "127.0.0.1").strip() or "127.0.0.1"
 PORT = int(os.environ.get("PORT", "8000"))
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
 SESSION_SECRET = os.environ.get("SESSION_SECRET", "fly-tying-dev-secret").encode("utf-8")
 SESSION_COOKIE = "flytying_session"
 GUEST_USER_EMAIL = "guest@local"
+USING_POSTGRES = DATABASE_URL.startswith("postgres")
 
 
 LOCATION_SEED = [
@@ -93,11 +103,61 @@ FLY_SEED = [
 ]
 
 
-def connect_db() -> sqlite3.Connection:
+def normalize_query(query: str) -> str:
+    if not USING_POSTGRES:
+        return query
+
+    normalized = query.replace("?", "%s")
+    normalized = normalized.replace(" COLLATE NOCASE", "")
+    normalized = normalized.replace("datetime(created_at)", "created_at")
+    normalized = re.sub(r"\bLIKE\b", "ILIKE", normalized)
+    return normalized
+
+
+def connect_db() -> Any:
+    if USING_POSTGRES:
+        if psycopg is None or dict_row is None:
+            raise RuntimeError("DATABASE_URL is set, but psycopg is not installed.")
+        return psycopg.connect(DATABASE_URL, row_factory=dict_row)
+
     connection = sqlite3.connect(DB_PATH)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     return connection
+
+
+def db_execute(connection: Any, query: str, params: tuple[Any, ...] | list[Any] = ()) -> Any:
+    return connection.execute(normalize_query(query), params)
+
+
+def db_executemany(connection: Any, query: str, rows: list[dict[str, Any]] | list[tuple[Any, ...]]) -> Any:
+    return connection.executemany(normalize_query(query), rows)
+
+
+def db_row_to_dict(row: Any) -> dict[str, Any]:
+    return dict(row)
+
+
+def db_scalar(row: Any, key: str, index: int = 0) -> Any:
+    if isinstance(row, dict):
+        if key in row:
+            return row[key]
+        return list(row.values())[index]
+    return row[index]
+
+
+def db_bool_sql(value: bool) -> str:
+    return "TRUE" if value and USING_POSTGRES else "FALSE" if USING_POSTGRES else ("1" if value else "0")
+
+
+def insert_and_get_id(connection: Any, query: str, params: tuple[Any, ...]) -> int:
+    if USING_POSTGRES:
+        returning_query = f"{query.strip().rstrip(';')} RETURNING id"
+        row = db_execute(connection, returning_query, params).fetchone()
+        return int(db_scalar(row, "id"))
+
+    cursor = db_execute(connection, query, params)
+    return int(cursor.lastrowid)
 
 
 def make_session_signature(session_id: str) -> str:
@@ -117,94 +177,98 @@ def normalize_user(row: sqlite3.Row | None) -> dict[str, Any] | None:
 
 
 def initialize_database() -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    if not USING_POSTGRES:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
     with connect_db() as connection:
-        connection.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                google_sub TEXT UNIQUE,
-                email TEXT NOT NULL UNIQUE,
-                name TEXT NOT NULL,
-                picture TEXT DEFAULT '',
-                is_guest INTEGER NOT NULL DEFAULT 0 CHECK(is_guest IN (0, 1)),
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
+        if USING_POSTGRES:
+            initialize_postgres_schema(connection)
+        else:
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    google_sub TEXT UNIQUE,
+                    email TEXT NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    picture TEXT DEFAULT '',
+                    is_guest INTEGER NOT NULL DEFAULT 0 CHECK(is_guest IN (0, 1)),
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
 
-            CREATE TABLE IF NOT EXISTS sessions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL UNIQUE,
-                user_id INTEGER NOT NULL,
-                expires_at TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-            );
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL UNIQUE,
+                    user_id INTEGER NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
 
-            CREATE TABLE IF NOT EXISTS locations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                name TEXT NOT NULL,
-                location_type TEXT NOT NULL DEFAULT 'Drawer',
-                zone TEXT DEFAULT '',
-                description TEXT DEFAULT '',
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
-                UNIQUE(user_id, name)
-            );
+                CREATE TABLE IF NOT EXISTS locations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    location_type TEXT NOT NULL DEFAULT 'Drawer',
+                    zone TEXT DEFAULT '',
+                    description TEXT DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                    UNIQUE(user_id, name)
+                );
 
-            CREATE TABLE IF NOT EXISTS materials (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                name TEXT NOT NULL,
-                category TEXT NOT NULL,
-                brand TEXT DEFAULT '',
-                variant TEXT DEFAULT '',
-                quantity INTEGER NOT NULL DEFAULT 0 CHECK(quantity >= 0),
-                is_out INTEGER NOT NULL DEFAULT 0 CHECK(is_out IN (0, 1)),
-                image_data TEXT DEFAULT '',
-                location_id INTEGER NOT NULL,
-                notes TEXT DEFAULT '',
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
-                FOREIGN KEY(location_id) REFERENCES locations(id) ON DELETE RESTRICT
-            );
+                CREATE TABLE IF NOT EXISTS materials (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    brand TEXT DEFAULT '',
+                    variant TEXT DEFAULT '',
+                    quantity INTEGER NOT NULL DEFAULT 0 CHECK(quantity >= 0),
+                    is_out INTEGER NOT NULL DEFAULT 0 CHECK(is_out IN (0, 1)),
+                    image_data TEXT DEFAULT '',
+                    location_id INTEGER NOT NULL,
+                    notes TEXT DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                    FOREIGN KEY(location_id) REFERENCES locations(id) ON DELETE RESTRICT
+                );
 
-            CREATE TABLE IF NOT EXISTS flies (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                name TEXT NOT NULL,
-                style TEXT DEFAULT '',
-                hook_size TEXT DEFAULT '',
-                recipe TEXT DEFAULT '',
-                notes TEXT DEFAULT '',
-                image_data TEXT DEFAULT '',
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-            );
+                CREATE TABLE IF NOT EXISTS flies (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    style TEXT DEFAULT '',
+                    hook_size TEXT DEFAULT '',
+                    recipe TEXT DEFAULT '',
+                    notes TEXT DEFAULT '',
+                    image_data TEXT DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
 
-            CREATE TABLE IF NOT EXISTS fly_materials (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                fly_id INTEGER NOT NULL,
-                material_id INTEGER NOT NULL,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY(fly_id) REFERENCES flies(id) ON DELETE CASCADE,
-                FOREIGN KEY(material_id) REFERENCES materials(id) ON DELETE CASCADE,
-                UNIQUE(fly_id, material_id)
-            );
+                CREATE TABLE IF NOT EXISTS fly_materials (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    fly_id INTEGER NOT NULL,
+                    material_id INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(fly_id) REFERENCES flies(id) ON DELETE CASCADE,
+                    FOREIGN KEY(material_id) REFERENCES materials(id) ON DELETE CASCADE,
+                    UNIQUE(fly_id, material_id)
+                );
 
-            CREATE TABLE IF NOT EXISTS bug_reports (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                title TEXT NOT NULL,
-                page TEXT DEFAULT '',
-                severity TEXT NOT NULL DEFAULT 'Medium',
-                details TEXT NOT NULL DEFAULT '',
-                status TEXT NOT NULL DEFAULT 'Open',
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-            );
-            """
-        )
+                CREATE TABLE IF NOT EXISTS bug_reports (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    page TEXT DEFAULT '',
+                    severity TEXT NOT NULL DEFAULT 'Medium',
+                    details TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'Open',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+                );
+                """
+            )
 
         ensure_column(connection, "locations", "location_type", "TEXT NOT NULL DEFAULT 'Drawer'")
         ensure_column(connection, "locations", "user_id", "INTEGER")
@@ -223,51 +287,146 @@ def initialize_database() -> None:
         ensure_column(connection, "bug_reports", "details", "TEXT NOT NULL DEFAULT ''")
         ensure_column(connection, "bug_reports", "status", "TEXT NOT NULL DEFAULT 'Open'")
 
-        connection.execute("CREATE INDEX IF NOT EXISTS idx_materials_user_name ON materials(user_id, name)")
-        connection.execute("CREATE INDEX IF NOT EXISTS idx_materials_user_category ON materials(user_id, category)")
-        connection.execute("CREATE INDEX IF NOT EXISTS idx_materials_user_location ON materials(user_id, location_id)")
-        connection.execute("CREATE INDEX IF NOT EXISTS idx_fly_user_name ON flies(user_id, name)")
-        connection.execute("CREATE INDEX IF NOT EXISTS idx_fly_material_fly ON fly_materials(fly_id)")
-        connection.execute("CREATE INDEX IF NOT EXISTS idx_bug_reports_user_created ON bug_reports(user_id, created_at DESC)")
-        connection.execute("CREATE INDEX IF NOT EXISTS idx_sessions_session_id ON sessions(session_id)")
+        db_execute(connection, "CREATE INDEX IF NOT EXISTS idx_materials_user_name ON materials(user_id, name)")
+        db_execute(connection, "CREATE INDEX IF NOT EXISTS idx_materials_user_category ON materials(user_id, category)")
+        db_execute(connection, "CREATE INDEX IF NOT EXISTS idx_materials_user_location ON materials(user_id, location_id)")
+        db_execute(connection, "CREATE INDEX IF NOT EXISTS idx_fly_user_name ON flies(user_id, name)")
+        db_execute(connection, "CREATE INDEX IF NOT EXISTS idx_fly_material_fly ON fly_materials(fly_id)")
+        db_execute(connection, "CREATE INDEX IF NOT EXISTS idx_bug_reports_user_created ON bug_reports(user_id, created_at DESC)")
+        db_execute(connection, "CREATE INDEX IF NOT EXISTS idx_sessions_session_id ON sessions(session_id)")
 
         guest_user_id = ensure_guest_user(connection)
         migrate_legacy_data(connection, guest_user_id)
         seed_guest_data_if_needed(connection, guest_user_id)
 
 
-def ensure_column(connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+def initialize_postgres_schema(connection: Any) -> None:
+    statements = [
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id BIGSERIAL PRIMARY KEY,
+            google_sub TEXT UNIQUE,
+            email TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            picture TEXT DEFAULT '',
+            is_guest BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS sessions (
+            id BIGSERIAL PRIMARY KEY,
+            session_id TEXT NOT NULL UNIQUE,
+            user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            expires_at TIMESTAMPTZ NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS locations (
+            id BIGSERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            location_type TEXT NOT NULL DEFAULT 'Drawer',
+            zone TEXT DEFAULT '',
+            description TEXT DEFAULT '',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, name)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS materials (
+            id BIGSERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            category TEXT NOT NULL,
+            brand TEXT DEFAULT '',
+            variant TEXT DEFAULT '',
+            quantity INTEGER NOT NULL DEFAULT 0 CHECK(quantity >= 0),
+            is_out BOOLEAN NOT NULL DEFAULT FALSE,
+            image_data TEXT DEFAULT '',
+            location_id BIGINT NOT NULL REFERENCES locations(id) ON DELETE RESTRICT,
+            notes TEXT DEFAULT '',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS flies (
+            id BIGSERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            style TEXT DEFAULT '',
+            hook_size TEXT DEFAULT '',
+            recipe TEXT DEFAULT '',
+            notes TEXT DEFAULT '',
+            image_data TEXT DEFAULT '',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS fly_materials (
+            id BIGSERIAL PRIMARY KEY,
+            fly_id BIGINT NOT NULL REFERENCES flies(id) ON DELETE CASCADE,
+            material_id BIGINT NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(fly_id, material_id)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS bug_reports (
+            id BIGSERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            page TEXT DEFAULT '',
+            severity TEXT NOT NULL DEFAULT 'Medium',
+            details TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'Open',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+    ]
+    for statement in statements:
+        db_execute(connection, statement)
+
+
+def ensure_column(connection: Any, table: str, column: str, definition: str) -> None:
+    if USING_POSTGRES:
+        db_execute(connection, f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {definition}")
+        return
+
     columns = {
         row["name"]
-        for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+        for row in db_execute(connection, f"PRAGMA table_info({table})").fetchall()
     }
     if column not in columns:
-        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        db_execute(connection, f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def ensure_guest_user(connection: sqlite3.Connection) -> int:
-    row = connection.execute(
+    row = db_execute(
+        connection,
         "SELECT id FROM users WHERE email = ?",
         (GUEST_USER_EMAIL,),
     ).fetchone()
     if row:
-        return row["id"]
+        return int(db_scalar(row, "id"))
 
-    cursor = connection.execute(
+    return insert_and_get_id(
+        connection,
         """
         INSERT INTO users (google_sub, email, name, picture, is_guest)
-        VALUES (?, ?, ?, ?, 1)
+        VALUES (?, ?, ?, ?, ?)
         """,
-        ("guest-local", GUEST_USER_EMAIL, "Guest", ""),
+        ("guest-local", GUEST_USER_EMAIL, "Guest", "", True if USING_POSTGRES else 1),
     )
-    return cursor.lastrowid
 
 
 def migrate_legacy_data(connection: sqlite3.Connection, guest_user_id: int) -> None:
-    connection.execute("UPDATE locations SET user_id = ? WHERE user_id IS NULL", (guest_user_id,))
-    connection.execute("UPDATE materials SET user_id = ? WHERE user_id IS NULL", (guest_user_id,))
-    connection.execute("UPDATE flies SET user_id = ? WHERE user_id IS NULL", (guest_user_id,))
-    connection.execute(
+    db_execute(connection, "UPDATE locations SET user_id = ? WHERE user_id IS NULL", (guest_user_id,))
+    db_execute(connection, "UPDATE materials SET user_id = ? WHERE user_id IS NULL", (guest_user_id,))
+    db_execute(connection, "UPDATE flies SET user_id = ? WHERE user_id IS NULL", (guest_user_id,))
+    db_execute(
+        connection,
         """
         UPDATE locations
         SET location_type = CASE
@@ -282,66 +441,86 @@ def migrate_legacy_data(connection: sqlite3.Connection, guest_user_id: int) -> N
 
 
 def seed_guest_data_if_needed(connection: sqlite3.Connection, guest_user_id: int) -> None:
-    location_count = connection.execute(
+    location_count = db_scalar(
+        db_execute(
+            connection,
         "SELECT COUNT(*) FROM locations WHERE user_id = ?",
         (guest_user_id,),
-    ).fetchone()[0]
+    ).fetchone(), "count", 0)
     if location_count == 0:
-        connection.executemany(
+        db_executemany(
+            connection,
             """
             INSERT INTO locations (user_id, name, location_type, zone, description)
-            VALUES (:user_id, :name, :location_type, :zone, :description)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            [{**location, "user_id": guest_user_id} for location in LOCATION_SEED],
+            [
+                (
+                    guest_user_id,
+                    location["name"],
+                    location["location_type"],
+                    location["zone"],
+                    location["description"],
+                )
+                for location in LOCATION_SEED
+            ],
         )
 
-    material_count = connection.execute(
+    material_count = db_scalar(
+        db_execute(
+            connection,
         "SELECT COUNT(*) FROM materials WHERE user_id = ?",
         (guest_user_id,),
-    ).fetchone()[0]
+    ).fetchone(), "count", 0)
     if material_count == 0:
         location_lookup = {
             row["name"]: row["id"]
-            for row in connection.execute(
+            for row in db_execute(
+                connection,
                 "SELECT id, name FROM locations WHERE user_id = ?",
                 (guest_user_id,),
             ).fetchall()
         }
         material_rows = [
-            {
-                "user_id": guest_user_id,
-                "name": item["name"],
-                "category": item["category"],
-                "brand": item["brand"],
-                "variant": item["variant"],
-                "quantity": item["quantity"],
-                "location_id": location_lookup[item["location_name"]],
-                "notes": item["notes"],
-            }
+            (
+                guest_user_id,
+                item["name"],
+                item["category"],
+                item["brand"],
+                item["variant"],
+                item["quantity"],
+                location_lookup[item["location_name"]],
+                item["notes"],
+            )
             for item in MATERIAL_SEED
         ]
-        connection.executemany(
+        db_executemany(
+            connection,
             """
             INSERT INTO materials (user_id, name, category, brand, variant, quantity, location_id, notes)
-            VALUES (:user_id, :name, :category, :brand, :variant, :quantity, :location_id, :notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             material_rows,
         )
 
-    fly_count = connection.execute(
+    fly_count = db_scalar(
+        db_execute(
+            connection,
         "SELECT COUNT(*) FROM flies WHERE user_id = ?",
         (guest_user_id,),
-    ).fetchone()[0]
+    ).fetchone(), "count", 0)
     if fly_count == 0:
         material_lookup = {
             row["name"]: row["id"]
-            for row in connection.execute(
+            for row in db_execute(
+                connection,
                 "SELECT id, name FROM materials WHERE user_id = ?",
                 (guest_user_id,),
             ).fetchall()
         }
         for fly in FLY_SEED:
-            cursor = connection.execute(
+            fly_id = insert_and_get_id(
+                connection,
                 """
                 INSERT INTO flies (user_id, name, style, hook_size, recipe, notes, image_data)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -356,11 +535,11 @@ def seed_guest_data_if_needed(connection: sqlite3.Connection, guest_user_id: int
                     "",
                 ),
             )
-            fly_id = cursor.lastrowid
             for material_name in fly["material_names"]:
                 material_id = material_lookup.get(material_name)
                 if material_id:
-                    connection.execute(
+                    db_execute(
+                        connection,
                         "INSERT INTO fly_materials (fly_id, material_id) VALUES (?, ?)",
                         (fly_id, material_id),
                     )
@@ -368,19 +547,22 @@ def seed_guest_data_if_needed(connection: sqlite3.Connection, guest_user_id: int
 
 
 def copy_guest_seed_to_user(connection: sqlite3.Connection, user_id: int) -> None:
-    guest_user_id = connection.execute(
+    guest_user_id = db_scalar(db_execute(
+        connection,
         "SELECT id FROM users WHERE email = ?",
         (GUEST_USER_EMAIL,),
-    ).fetchone()["id"]
+    ).fetchone(), "id")
 
-    location_count = connection.execute(
+    location_count = db_scalar(db_execute(
+        connection,
         "SELECT COUNT(*) FROM locations WHERE user_id = ?",
         (user_id,),
-    ).fetchone()[0]
+    ).fetchone(), "count", 0)
     if location_count > 0:
         return
 
-    guest_locations = connection.execute(
+    guest_locations = db_execute(
+        connection,
         """
         SELECT name, location_type, zone, description
         FROM locations
@@ -390,7 +572,8 @@ def copy_guest_seed_to_user(connection: sqlite3.Connection, user_id: int) -> Non
         (guest_user_id,),
     ).fetchall()
     for row in guest_locations:
-        connection.execute(
+        db_execute(
+            connection,
             """
             INSERT INTO locations (user_id, name, location_type, zone, description)
             VALUES (?, ?, ?, ?, ?)
@@ -400,19 +583,22 @@ def copy_guest_seed_to_user(connection: sqlite3.Connection, user_id: int) -> Non
 
     guest_lookup = {
         row["name"]: row["id"]
-        for row in connection.execute(
+        for row in db_execute(
+            connection,
             "SELECT id, name FROM locations WHERE user_id = ?",
             (guest_user_id,),
         ).fetchall()
     }
     new_lookup = {
         row["name"]: row["id"]
-        for row in connection.execute(
+        for row in db_execute(
+            connection,
             "SELECT id, name FROM locations WHERE user_id = ?",
             (user_id,),
         ).fetchall()
     }
-    guest_materials = connection.execute(
+    guest_materials = db_execute(
+        connection,
         """
         SELECT name, category, brand, variant, quantity, is_out, image_data, location_id, notes
         FROM materials
@@ -423,7 +609,8 @@ def copy_guest_seed_to_user(connection: sqlite3.Connection, user_id: int) -> Non
     ).fetchall()
     for row in guest_materials:
         location_name = next(name for name, location_id in guest_lookup.items() if location_id == row["location_id"])
-        connection.execute(
+        db_execute(
+            connection,
             """
             INSERT INTO materials (user_id, name, category, brand, variant, quantity, is_out, image_data, location_id, notes)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -444,19 +631,22 @@ def copy_guest_seed_to_user(connection: sqlite3.Connection, user_id: int) -> Non
 
     guest_material_lookup = {
         row["name"]: row["id"]
-        for row in connection.execute(
+        for row in db_execute(
+            connection,
             "SELECT id, name FROM materials WHERE user_id = ?",
             (guest_user_id,),
         ).fetchall()
     }
     new_material_lookup = {
         row["name"]: row["id"]
-        for row in connection.execute(
+        for row in db_execute(
+            connection,
             "SELECT id, name FROM materials WHERE user_id = ?",
             (user_id,),
         ).fetchall()
     }
-    guest_flies = connection.execute(
+    guest_flies = db_execute(
+        connection,
         """
         SELECT id, name, style, hook_size, recipe, notes, image_data
         FROM flies
@@ -466,7 +656,8 @@ def copy_guest_seed_to_user(connection: sqlite3.Connection, user_id: int) -> Non
         (guest_user_id,),
     ).fetchall()
     for row in guest_flies:
-        cursor = connection.execute(
+        new_fly_id = insert_and_get_id(
+            connection,
             """
             INSERT INTO flies (user_id, name, style, hook_size, recipe, notes, image_data)
             VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -481,8 +672,8 @@ def copy_guest_seed_to_user(connection: sqlite3.Connection, user_id: int) -> Non
                 row["image_data"],
             ),
         )
-        new_fly_id = cursor.lastrowid
-        guest_links = connection.execute(
+        guest_links = db_execute(
+            connection,
             """
             SELECT materials.name
             FROM fly_materials
@@ -494,7 +685,8 @@ def copy_guest_seed_to_user(connection: sqlite3.Connection, user_id: int) -> Non
         for link in guest_links:
             material_id = new_material_lookup.get(link["name"])
             if material_id:
-                connection.execute(
+                db_execute(
+                    connection,
                     "INSERT INTO fly_materials (fly_id, material_id) VALUES (?, ?)",
                     (new_fly_id, material_id),
                 )
@@ -556,30 +748,32 @@ def list_materials(user_id: int, filters: dict[str, str]) -> list[dict[str, Any]
 
     status_value = filters.get("status", "").strip().lower()
     if status_value == "out":
-        query += " AND materials.is_out = 1"
+        query += f" AND materials.is_out = {db_bool_sql(True)}"
     elif status_value == "in":
-        query += " AND materials.is_out = 0"
+        query += f" AND materials.is_out = {db_bool_sql(False)}"
 
-    query += " ORDER BY materials.name COLLATE NOCASE ASC"
+    query += " ORDER BY lower(materials.name) ASC"
 
     with connect_db() as connection:
-        rows = connection.execute(query, params).fetchall()
-        return [dict(row) for row in rows]
+        rows = db_execute(connection, query, params).fetchall()
+        return [db_row_to_dict(row) for row in rows]
 
 
 def list_flies(user_id: int) -> list[dict[str, Any]]:
     with connect_db() as connection:
-        fly_rows = connection.execute(
+        fly_rows = db_execute(
+            connection,
             """
             SELECT id, name, style, hook_size, recipe, notes, image_data
             FROM flies
             WHERE user_id = ?
-            ORDER BY name COLLATE NOCASE ASC
+            ORDER BY lower(name) ASC
             """,
             (user_id,),
         ).fetchall()
 
-        material_rows = connection.execute(
+        material_rows = db_execute(
+            connection,
             """
             SELECT
                 fly_materials.fly_id,
@@ -598,7 +792,7 @@ def list_flies(user_id: int) -> list[dict[str, Any]]:
             JOIN materials ON materials.id = fly_materials.material_id
             LEFT JOIN locations ON locations.id = materials.location_id
             WHERE flies.user_id = ?
-            ORDER BY materials.name COLLATE NOCASE ASC
+            ORDER BY lower(materials.name) ASC
             """,
             (user_id,),
         ).fetchall()
@@ -637,22 +831,26 @@ def list_flies(user_id: int) -> list[dict[str, Any]]:
 
 def get_summary(user_id: int) -> dict[str, int]:
     with connect_db() as connection:
-        total_materials = connection.execute(
+        total_materials = db_scalar(db_execute(
+            connection,
             "SELECT COUNT(*) FROM materials WHERE user_id = ?",
             (user_id,),
-        ).fetchone()[0]
-        total_locations = connection.execute(
+        ).fetchone(), "count", 0)
+        total_locations = db_scalar(db_execute(
+            connection,
             "SELECT COUNT(*) FROM locations WHERE user_id = ?",
             (user_id,),
-        ).fetchone()[0]
-        out_count = connection.execute(
-            "SELECT COUNT(*) FROM materials WHERE user_id = ? AND is_out = 1",
+        ).fetchone(), "count", 0)
+        out_count = db_scalar(db_execute(
+            connection,
+            f"SELECT COUNT(*) FROM materials WHERE user_id = ? AND is_out = {db_bool_sql(True)}",
             (user_id,),
-        ).fetchone()[0]
-        fly_count = connection.execute(
+        ).fetchone(), "count", 0)
+        fly_count = db_scalar(db_execute(
+            connection,
             "SELECT COUNT(*) FROM flies WHERE user_id = ?",
             (user_id,),
-        ).fetchone()[0]
+        ).fetchone(), "count", 0)
         return {
             "material_count": total_materials,
             "location_count": total_locations,
@@ -663,7 +861,8 @@ def get_summary(user_id: int) -> dict[str, int]:
 
 def list_bug_reports(user_id: int) -> list[dict[str, Any]]:
     with connect_db() as connection:
-        rows = connection.execute(
+        rows = db_execute(
+            connection,
             """
             SELECT id, title, page, severity, details, status, created_at
             FROM bug_reports
@@ -672,7 +871,7 @@ def list_bug_reports(user_id: int) -> list[dict[str, Any]]:
             """,
             (user_id,),
         ).fetchall()
-        return [dict(row) for row in rows]
+        return [db_row_to_dict(row) for row in rows]
 
 
 def list_locations(user_id: int) -> list[dict[str, Any]]:
@@ -688,12 +887,12 @@ def list_locations(user_id: int) -> list[dict[str, Any]]:
         LEFT JOIN materials ON materials.location_id = locations.id
         WHERE locations.user_id = ?
         GROUP BY locations.id
-        ORDER BY locations.name COLLATE NOCASE ASC
+        ORDER BY lower(locations.name) ASC
     """
 
     with connect_db() as connection:
-        rows = connection.execute(query, (user_id,)).fetchall()
-        return [dict(row) for row in rows]
+        rows = db_execute(connection, query, (user_id,)).fetchall()
+        return [db_row_to_dict(row) for row in rows]
 
 
 def create_location(user_id: int, payload: dict[str, Any]) -> dict[str, Any]:
@@ -709,7 +908,8 @@ def create_location(user_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Storage type must be Drawer, Bin, or Travel Kit.")
 
     with connect_db() as connection:
-        cursor = connection.execute(
+        location_id = insert_and_get_id(
+            connection,
             """
             INSERT INTO locations (user_id, name, location_type, zone, description)
             VALUES (?, ?, ?, ?, ?)
@@ -717,15 +917,16 @@ def create_location(user_id: int, payload: dict[str, Any]) -> dict[str, Any]:
             (user_id, name, location_type, zone, description),
         )
         connection.commit()
-        row = connection.execute(
+        row = db_execute(
+            connection,
             """
             SELECT id, name, location_type, zone, description, 0 AS material_count
             FROM locations
             WHERE id = ?
             """,
-            (cursor.lastrowid,),
+            (location_id,),
         ).fetchone()
-        return dict(row)
+        return db_row_to_dict(row)
 
 
 def create_material(user_id: int, payload: dict[str, Any]) -> dict[str, Any]:
@@ -752,14 +953,16 @@ def create_material(user_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("A storage location is required.")
 
     with connect_db() as connection:
-        location_exists = connection.execute(
+        location_exists = db_execute(
+            connection,
             "SELECT 1 FROM locations WHERE id = ? AND user_id = ?",
             (int(location_id), user_id),
         ).fetchone()
         if not location_exists:
             raise ValueError("The selected location does not exist.")
 
-        cursor = connection.execute(
+        material_id = insert_and_get_id(
+            connection,
             """
             INSERT INTO materials (user_id, name, category, brand, variant, quantity, image_data, location_id, notes)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -767,7 +970,8 @@ def create_material(user_id: int, payload: dict[str, Any]) -> dict[str, Any]:
             (user_id, name, category, brand, variant, quantity, image_data, int(location_id), notes),
         )
         connection.commit()
-        row = connection.execute(
+        row = db_execute(
+            connection,
             """
             SELECT
                 materials.id,
@@ -787,9 +991,9 @@ def create_material(user_id: int, payload: dict[str, Any]) -> dict[str, Any]:
             JOIN locations ON locations.id = materials.location_id
             WHERE materials.id = ?
             """,
-            (cursor.lastrowid,),
+            (material_id,),
         ).fetchone()
-        return dict(row)
+        return db_row_to_dict(row)
 
 
 def create_fly(user_id: int, payload: dict[str, Any]) -> dict[str, Any]:
@@ -816,23 +1020,25 @@ def create_fly(user_id: int, payload: dict[str, Any]) -> dict[str, Any]:
     with connect_db() as connection:
         if normalized_material_ids:
             placeholders = ",".join("?" for _ in normalized_material_ids)
-            valid_count = connection.execute(
+            valid_count = db_scalar(db_execute(
+                connection,
                 f"SELECT COUNT(*) FROM materials WHERE user_id = ? AND id IN ({placeholders})",
                 (user_id, *normalized_material_ids),
-            ).fetchone()[0]
+            ).fetchone(), "count", 0)
             if valid_count != len(set(normalized_material_ids)):
                 raise ValueError("One or more selected materials do not exist for this account.")
 
-        cursor = connection.execute(
+        fly_id = insert_and_get_id(
+            connection,
             """
             INSERT INTO flies (user_id, name, style, hook_size, recipe, notes, image_data)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (user_id, name, style, hook_size, recipe, notes, image_data),
         )
-        fly_id = cursor.lastrowid
         for material_id in sorted(set(normalized_material_ids)):
-            connection.execute(
+            db_execute(
+                connection,
                 "INSERT INTO fly_materials (fly_id, material_id) VALUES (?, ?)",
                 (fly_id, material_id),
             )
@@ -856,7 +1062,8 @@ def create_bug_report(user_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Severity must be Low, Medium, or High.")
 
     with connect_db() as connection:
-        cursor = connection.execute(
+        bug_report_id = insert_and_get_id(
+            connection,
             """
             INSERT INTO bug_reports (user_id, title, page, severity, details, status)
             VALUES (?, ?, ?, ?, ?, 'Open')
@@ -864,15 +1071,16 @@ def create_bug_report(user_id: int, payload: dict[str, Any]) -> dict[str, Any]:
             (user_id, title, page, severity, details),
         )
         connection.commit()
-        row = connection.execute(
+        row = db_execute(
+            connection,
             """
             SELECT id, title, page, severity, details, status, created_at
             FROM bug_reports
             WHERE id = ?
             """,
-            (cursor.lastrowid,),
+            (bug_report_id,),
         ).fetchone()
-        return dict(row)
+        return db_row_to_dict(row)
 
 
 def get_fly_by_id(user_id: int, fly_id: int) -> dict[str, Any]:
@@ -884,14 +1092,16 @@ def get_fly_by_id(user_id: int, fly_id: int) -> dict[str, Any]:
 
 def update_material_status(user_id: int, material_id: int, is_out: bool) -> dict[str, Any]:
     with connect_db() as connection:
-        cursor = connection.execute(
+        cursor = db_execute(
+            connection,
             "UPDATE materials SET is_out = ? WHERE id = ? AND user_id = ?",
-            (1 if is_out else 0, material_id, user_id),
+            ((True if is_out else False) if USING_POSTGRES else (1 if is_out else 0), material_id, user_id),
         )
         if cursor.rowcount == 0:
             raise ValueError("That material could not be found.")
         connection.commit()
-        row = connection.execute(
+        row = db_execute(
+            connection,
             """
             SELECT
                 materials.id,
@@ -913,7 +1123,7 @@ def update_material_status(user_id: int, material_id: int, is_out: bool) -> dict
             """,
             (material_id,),
         ).fetchone()
-        return dict(row)
+        return db_row_to_dict(row)
 
 
 def fetch_google_profile(credential: str) -> dict[str, Any]:
@@ -947,15 +1157,17 @@ def fetch_google_profile(credential: str) -> dict[str, Any]:
 
 def create_or_update_google_user(profile: dict[str, Any]) -> dict[str, Any]:
     with connect_db() as connection:
-        existing = connection.execute(
+        existing = db_execute(
+            connection,
             "SELECT * FROM users WHERE google_sub = ? OR email = ?",
             (profile["google_sub"], profile["email"]),
         ).fetchone()
         if existing:
-            connection.execute(
+            db_execute(
+                connection,
                 """
                 UPDATE users
-                SET google_sub = ?, email = ?, name = ?, picture = ?, is_guest = 0
+                SET google_sub = ?, email = ?, name = ?, picture = ?, is_guest = ?
                 WHERE id = ?
                 """,
                 (
@@ -963,28 +1175,30 @@ def create_or_update_google_user(profile: dict[str, Any]) -> dict[str, Any]:
                     profile["email"],
                     profile["name"],
                     profile["picture"],
+                    False if USING_POSTGRES else 0,
                     existing["id"],
                 ),
             )
-            user_id = existing["id"]
+            user_id = db_scalar(existing, "id")
         else:
-            cursor = connection.execute(
+            user_id = insert_and_get_id(
+                connection,
                 """
                 INSERT INTO users (google_sub, email, name, picture, is_guest)
-                VALUES (?, ?, ?, ?, 0)
+                VALUES (?, ?, ?, ?, ?)
                 """,
                 (
                     profile["google_sub"],
                     profile["email"],
                     profile["name"],
                     profile["picture"],
+                    False if USING_POSTGRES else 0,
                 ),
             )
-            user_id = cursor.lastrowid
 
         copy_guest_seed_to_user(connection, user_id)
         connection.commit()
-        row = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        row = db_execute(connection, "SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         return normalize_user(row)
 
 
@@ -992,7 +1206,8 @@ def create_session(user_id: int) -> tuple[str, str]:
     session_id = secrets.token_urlsafe(32)
     expires_at = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
     with connect_db() as connection:
-        connection.execute(
+        db_execute(
+            connection,
             "INSERT INTO sessions (session_id, user_id, expires_at) VALUES (?, ?, ?)",
             (session_id, user_id, expires_at),
         )
@@ -1002,13 +1217,14 @@ def create_session(user_id: int) -> tuple[str, str]:
 
 def delete_session(session_id: str) -> None:
     with connect_db() as connection:
-        connection.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        db_execute(connection, "DELETE FROM sessions WHERE session_id = ?", (session_id,))
         connection.commit()
 
 
 def get_guest_user() -> dict[str, Any]:
     with connect_db() as connection:
-        row = connection.execute(
+        row = db_execute(
+            connection,
             "SELECT * FROM users WHERE email = ?",
             (GUEST_USER_EMAIL,),
         ).fetchone()
@@ -1087,7 +1303,7 @@ class AppHandler(BaseHTTPRequestHandler):
             self.send_error_json(HTTPStatus.NOT_FOUND, "The requested API route was not found.")
         except ValueError as error:
             self.send_error_json(HTTPStatus.BAD_REQUEST, str(error))
-        except sqlite3.IntegrityError:
+        except (sqlite3.IntegrityError, psycopg.IntegrityError if psycopg else sqlite3.IntegrityError):
             self.send_error_json(HTTPStatus.BAD_REQUEST, "That item already exists for this account.")
         except json.JSONDecodeError:
             self.send_error_json(HTTPStatus.BAD_REQUEST, "Request body must be valid JSON.")
@@ -1178,7 +1394,8 @@ class AppHandler(BaseHTTPRequestHandler):
         session_id = self.get_session_id_from_cookie()
         if session_id:
             with connect_db() as connection:
-                row = connection.execute(
+                row = db_execute(
+                    connection,
                     """
                     SELECT users.*
                     FROM sessions
