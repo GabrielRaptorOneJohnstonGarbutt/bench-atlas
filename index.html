@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fly Tying Materials Tracker</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="side-menu">
+      <div class="brand-block">
+        <p class="eyebrow">Fly Tying Inventory</p>
+        <h1>Bench Atlas</h1>
+        <p class="brand-copy">Cleaner pages, faster lookup, and one account-backed inventory across devices.</p>
+      </div>
+
+      <nav class="nav-menu" aria-label="Sections">
+        <button type="button" class="nav-link is-active" data-page-target="atlas">Bench Atlas</button>
+        <button type="button" class="nav-link" data-page-target="inventory">Inventory</button>
+        <button type="button" class="nav-link" data-page-target="flies">Flies & Recipes</button>
+        <button type="button" class="nav-link" data-page-target="rebuy">Rebuy List</button>
+        <button type="button" class="nav-link" data-page-target="locations">Storage Spots</button>
+        <button type="button" class="nav-link" data-page-target="account">Account</button>
+        <button type="button" class="nav-link" data-page-target="bugs">Bug Reports</button>
+      </nav>
+
+      <section class="account-panel">
+        <p class="section-tag">Account</p>
+        <div id="account-summary" class="account-summary">
+          <p>Signed in as</p>
+          <strong id="account-name">Guest</strong>
+          <span id="account-email">Local device only</span>
+        </div>
+        <div id="google-auth-slot" class="google-auth-slot"></div>
+        <button id="logout-button" type="button" class="ghost-button ghost-button--full ghost-button--hidden">Sign out</button>
+        <p id="auth-message" class="helper-copy">Sign in with Google to keep your materials list available on different devices.</p>
+      </section>
+    </aside>
+
+    <main id="main-shell" class="main-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Fly Tying Organizer</p>
+          <h2 id="page-title">Bench Atlas</h2>
+          <p class="lede">
+            Track hooks, hackle, thread, dubbing, beads, and every other tying material
+            with a searchable inventory and real storage map.
+          </p>
+        </div>
+        <div class="stats-grid" id="stats-grid">
+          <article class="stat-card">
+            <span id="material-count">0</span>
+            <p>Materials</p>
+          </article>
+          <article class="stat-card">
+            <span id="location-count">0</span>
+            <p>Locations</p>
+          </article>
+          <article class="stat-card stat-card--alert">
+            <span id="rebuy-count">0</span>
+            <p>Need to rebuy</p>
+          </article>
+        </div>
+      </header>
+
+      <p id="status-message" class="status-message" aria-live="polite"></p>
+
+      <section class="page is-active" data-page="atlas">
+        <div class="page-grid page-grid--dashboard">
+          <section class="card">
+            <div class="section-header">
+              <div>
+                <p class="section-tag">Bench Atlas</p>
+                <h3>Your tying command center</h3>
+              </div>
+            </div>
+            <div class="dashboard-grid">
+              <article class="mini-card">
+                <span id="dashboard-total-materials">0</span>
+                <p>Total materials tracked</p>
+              </article>
+              <article class="mini-card">
+                <span id="dashboard-total-locations">0</span>
+                <p>Storage spots mapped</p>
+              </article>
+              <article class="mini-card mini-card--alert">
+                <span id="dashboard-out-count">0</span>
+                <p>Items to rebuy</p>
+              </article>
+              <article class="mini-card">
+                <span id="dashboard-fly-count">0</span>
+                <p>Saved fly patterns</p>
+              </article>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="section-header">
+              <div>
+                <p class="section-tag">Rebuy Snapshot</p>
+                <h3>Run-out items</h3>
+              </div>
+              <button type="button" class="ghost-button" data-page-target="rebuy">Open page</button>
+            </div>
+            <div id="dashboard-rebuy-list" class="rebuy-list" aria-live="polite"></div>
+          </section>
+
+          <section class="card">
+            <div class="section-header">
+              <div>
+                <p class="section-tag">Bench Layout</p>
+                <h3>Where everything lives</h3>
+              </div>
+              <button type="button" class="ghost-button" data-page-target="locations">Manage spots</button>
+            </div>
+            <div id="dashboard-location-map" class="location-grid"></div>
+          </section>
+
+          <section class="card">
+            <div class="section-header">
+              <div>
+                <p class="section-tag">Pattern Library</p>
+                <h3>Saved flies</h3>
+              </div>
+              <button type="button" class="ghost-button" data-page-target="flies">Open page</button>
+            </div>
+            <div id="dashboard-fly-list" class="fly-grid"></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="page" data-page="flies">
+        <div class="page-grid">
+          <section class="card">
+            <div class="section-header">
+              <div>
+                <p class="section-tag">Add Fly</p>
+                <h3>Pattern recipe</h3>
+              </div>
+            </div>
+
+            <form id="fly-form" class="stack-form">
+              <label>
+                <span class="field-label">Fly name</span>
+                <input name="name" type="text" placeholder="Pheasant Tail Nymph" required>
+              </label>
+              <label>
+                <span class="field-label">Style</span>
+                <input name="style" type="text" placeholder="Nymph, dry fly, streamer">
+              </label>
+              <label>
+                <span class="field-label">Hook / size</span>
+                <input name="hook_size" type="text" placeholder="Size 14 jig hook">
+              </label>
+              <label>
+                <span class="field-label">Recipe steps</span>
+                <textarea name="recipe" rows="5" placeholder="Tail, body, rib, thorax, bead, finishing notes"></textarea>
+              </label>
+              <label>
+                <span class="field-label">Fly photo</span>
+                <input id="fly-image-input" name="image_file" type="file" accept="image/*" capture="environment">
+              </label>
+              <div id="fly-image-preview" class="image-preview image-preview--empty">
+                <p>No fly photo selected yet.</p>
+              </div>
+              <div class="stack-form">
+                <span class="field-label">Required materials</span>
+                <div id="fly-material-picker" class="material-picker"></div>
+              </div>
+              <button type="submit" class="primary-button">Save fly</button>
+            </form>
+          </section>
+
+          <section class="card">
+            <div class="section-header">
+              <div>
+                <p class="section-tag">Pattern Library</p>
+                <h3>Saved flies and recipes</h3>
+              </div>
+            </div>
+            <div id="fly-list" class="fly-grid"></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="page" data-page="inventory">
+        <div class="page-grid">
+          <section class="card">
+            <div class="section-header">
+              <div>
+                <p class="section-tag">Add Material</p>
+                <h3>Inventory item</h3>
+              </div>
+            </div>
+
+            <form id="material-form" class="stack-form">
+              <label>
+                <span class="field-label">Material name</span>
+                <input name="name" type="text" placeholder="Whiting saddle hackle" required>
+              </label>
+              <label>
+                <span class="field-label">Category</span>
+                <input name="category" type="text" placeholder="Hackle, hooks, thread" required>
+              </label>
+              <label>
+                <span class="field-label">Brand</span>
+                <input name="brand" type="text" placeholder="Optional">
+              </label>
+              <label>
+                <span class="field-label">Color / size</span>
+                <input name="variant" type="text" placeholder="Grizzly, olive, size 14">
+              </label>
+              <label>
+                <span class="field-label">Quantity</span>
+                <input name="quantity" type="number" min="0" value="1" required>
+              </label>
+              <label>
+                <span class="field-label">Storage location</span>
+                <select id="material-location-select" name="location_id" required></select>
+              </label>
+              <label>
+                <span class="field-label">Picture</span>
+                <input id="material-image-input" name="image_file" type="file" accept="image/*" capture="environment">
+              </label>
+              <div class="camera-actions">
+                <button id="open-camera-button" type="button" class="ghost-button">Take picture</button>
+                <button id="clear-image-button" type="button" class="ghost-button">Clear picture</button>
+              </div>
+              <div id="camera-capture" class="camera-capture camera-capture--hidden">
+                <video id="camera-video" class="camera-video" autoplay playsinline muted></video>
+                <div class="camera-actions">
+                  <button id="capture-photo-button" type="button" class="primary-button">Capture</button>
+                  <button id="cancel-camera-button" type="button" class="ghost-button">Cancel</button>
+                </div>
+              </div>
+              <div id="material-image-preview" class="image-preview image-preview--empty">
+                <p>No picture selected yet.</p>
+              </div>
+              <label>
+                <span class="field-label">Notes</span>
+                <textarea name="notes" rows="3" placeholder="Pattern notes, substitutes, or reminders"></textarea>
+              </label>
+              <button type="submit" class="primary-button">Save material</button>
+            </form>
+          </section>
+
+          <section class="card">
+            <div class="section-header">
+              <div>
+                <p class="section-tag">Lookup Tool</p>
+                <h3>Search your bench</h3>
+              </div>
+              <button id="refresh-button" class="ghost-button" type="button">Refresh</button>
+            </div>
+
+            <div class="search-block">
+              <label class="search-field">
+                <span class="field-label">Search</span>
+                <input id="search-input" type="search" placeholder="Material, brand, color, size, or note">
+              </label>
+            </div>
+
+            <div class="filter-grid">
+              <label>
+                <span class="field-label">Category</span>
+                <select id="category-filter">
+                  <option value="">All categories</option>
+                </select>
+              </label>
+              <label>
+                <span class="field-label">Location</span>
+                <select id="location-filter">
+                  <option value="">All locations</option>
+                </select>
+              </label>
+              <label>
+                <span class="field-label">Rebuy list</span>
+                <select id="status-filter">
+                  <option value="">All materials</option>
+                  <option value="out">Need to rebuy</option>
+                  <option value="in">Available</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="quick-swap">
+              <span class="field-label">Quick swap storage type</span>
+              <div id="type-filter-group" class="segmented-control" role="group" aria-label="Filter by storage type">
+                <button type="button" class="segment-button is-active" data-type-filter="">All</button>
+                <button type="button" class="segment-button" data-type-filter="Drawer">Drawer</button>
+                <button type="button" class="segment-button" data-type-filter="Bin">Bin</button>
+                <button type="button" class="segment-button" data-type-filter="Travel Kit">Travel Kit</button>
+              </div>
+            </div>
+
+            <div id="lookup-results" class="results-grid" aria-live="polite"></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="page" data-page="rebuy">
+        <section class="card">
+          <div class="section-header">
+            <div>
+              <p class="section-tag">Shopping Page</p>
+              <h3>Items that need rebuying</h3>
+            </div>
+          </div>
+          <div id="rebuy-list" class="rebuy-list" aria-live="polite"></div>
+        </section>
+      </section>
+
+      <section class="page" data-page="locations">
+        <div class="page-grid">
+          <section class="card">
+            <div class="section-header">
+              <div>
+                <p class="section-tag">Add Location</p>
+                <h3>Storage spot</h3>
+              </div>
+            </div>
+
+            <form id="location-form" class="stack-form">
+              <div>
+                <span class="field-label">Main storage type</span>
+                <div id="location-type-group" class="segmented-control" role="group" aria-label="Choose storage type">
+                  <button type="button" class="segment-button is-active" data-location-type="Drawer">Drawer</button>
+                  <button type="button" class="segment-button" data-location-type="Bin">Bin</button>
+                  <button type="button" class="segment-button" data-location-type="Travel Kit">Travel Kit</button>
+                </div>
+                <input id="location-type-input" name="location_type" type="hidden" value="Drawer">
+              </div>
+              <label>
+                <span class="field-label">Location name</span>
+                <input name="name" type="text" placeholder="Drawer A2" required>
+              </label>
+              <label>
+                <span class="field-label">Zone</span>
+                <input name="zone" type="text" placeholder="Bench, shelf, travel kit">
+              </label>
+              <label>
+                <span class="field-label">Description</span>
+                <textarea name="description" rows="3" placeholder="Second drawer in the rolling cabinet"></textarea>
+              </label>
+              <button type="submit" class="primary-button">Save location</button>
+            </form>
+          </section>
+
+          <section class="card">
+            <div class="section-header">
+              <div>
+                <p class="section-tag">Storage Map</p>
+                <h3>Where everything lives</h3>
+              </div>
+            </div>
+            <div id="location-map" class="location-grid"></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="page" data-page="account">
+        <div class="page-grid">
+          <section class="card">
+            <div class="section-header">
+              <div>
+                <p class="section-tag">Sync</p>
+                <h3>Google account access</h3>
+              </div>
+            </div>
+            <p class="helper-copy">
+              Sign in with Google to sync your materials list across devices. This app uses your Google identity
+              to scope your own inventory in the database.
+            </p>
+            <div id="account-page-auth-slot" class="google-auth-slot"></div>
+            <button id="account-page-logout-button" type="button" class="ghost-button ghost-button--hidden">Sign out</button>
+            <p id="auth-config-message" class="helper-copy">
+              If Google sign-in is not configured yet, the app will keep working in guest mode on this device.
+            </p>
+          </section>
+
+          <section class="card">
+            <div class="section-header">
+              <div>
+                <p class="section-tag">Current Account</p>
+                <h3>Who is using this list</h3>
+              </div>
+            </div>
+            <div class="account-page-summary">
+              <p><strong>Name:</strong> <span id="account-page-name">Guest</span></p>
+              <p><strong>Email:</strong> <span id="account-page-email">Local device only</span></p>
+              <p><strong>Status:</strong> <span id="account-page-status">Guest mode</span></p>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="page" data-page="bugs">
+        <div class="page-grid">
+          <section class="card">
+            <div class="section-header">
+              <div>
+                <p class="section-tag">Send Report</p>
+                <h3>Bug report</h3>
+              </div>
+            </div>
+
+            <form id="bug-report-form" class="stack-form">
+              <label>
+                <span class="field-label">Title</span>
+                <input name="title" type="text" placeholder="Camera preview stays black on mobile" required>
+              </label>
+              <label>
+                <span class="field-label">Page</span>
+                <select name="page">
+                  <option value="Bench Atlas">Bench Atlas</option>
+                  <option value="Inventory">Inventory</option>
+                  <option value="Flies & Recipes">Flies & Recipes</option>
+                  <option value="Rebuy List">Rebuy List</option>
+                  <option value="Storage Spots">Storage Spots</option>
+                  <option value="Bug Reports">Bug Reports</option>
+                  <option value="Account">Account</option>
+                </select>
+              </label>
+              <label>
+                <span class="field-label">Severity</span>
+                <select name="severity">
+                  <option value="Medium">Medium</option>
+                  <option value="Low">Low</option>
+                  <option value="High">High</option>
+                </select>
+              </label>
+              <label>
+                <span class="field-label">What happened</span>
+                <textarea name="details" rows="5" placeholder="What you expected, what happened instead, and how to reproduce it." required></textarea>
+              </label>
+              <button type="submit" class="primary-button">Submit report</button>
+            </form>
+          </section>
+
+          <section class="card">
+            <div class="section-header">
+              <div>
+                <p class="section-tag">Recent Reports</p>
+                <h3>Saved bug reports</h3>
+              </div>
+            </div>
+            <div id="bug-report-list" class="bug-report-list" aria-live="polite"></div>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <template id="material-card-template">
+    <article class="material-card">
+      <div class="material-image-wrap">
+        <img class="material-image" alt="">
+      </div>
+      <div class="material-card__header">
+        <div>
+          <h3 class="material-name"></h3>
+          <p class="material-meta"></p>
+        </div>
+        <span class="location-type-pill"></span>
+      </div>
+      <dl class="material-details">
+        <div>
+          <dt>Stored in</dt>
+          <dd class="material-location"></dd>
+        </div>
+        <div>
+          <dt>Quantity</dt>
+          <dd class="material-quantity"></dd>
+        </div>
+        <div>
+          <dt>Status</dt>
+          <dd class="material-status"></dd>
+        </div>
+        <div>
+          <dt>Notes</dt>
+          <dd class="material-notes"></dd>
+        </div>
+      </dl>
+      <div class="material-card__actions">
+        <button type="button" class="toggle-status-button"></button>
+      </div>
+    </article>
+  </template>
+
+  <template id="rebuy-item-template">
+    <article class="rebuy-item">
+      <div class="rebuy-image-wrap">
+        <img class="rebuy-image" alt="">
+      </div>
+      <div class="rebuy-item__top">
+        <div>
+          <h3 class="rebuy-item__name"></h3>
+          <p class="rebuy-item__meta"></p>
+        </div>
+        <span class="rebuy-item__pill">Rebuy</span>
+      </div>
+      <p class="rebuy-item__location"></p>
+      <button type="button" class="toggle-status-button rebuy-item__action">Mark as restocked</button>
+    </article>
+  </template>
+
+  <template id="fly-card-template">
+    <article class="fly-card">
+      <div class="fly-image-wrap">
+        <img class="fly-image" alt="">
+      </div>
+      <div class="fly-card__header">
+        <div>
+          <h3 class="fly-name"></h3>
+          <p class="fly-meta"></p>
+        </div>
+      </div>
+      <div class="fly-section">
+        <p class="fly-section__label">Recipe</p>
+        <p class="fly-recipe"></p>
+      </div>
+      <div class="fly-section">
+        <p class="fly-section__label">Required materials</p>
+        <div class="fly-materials"></div>
+      </div>
+    </article>
+  </template>
+
+  <template id="bug-report-template">
+    <article class="bug-report-card">
+      <div class="bug-report-card__top">
+        <div>
+          <h3 class="bug-report-title"></h3>
+          <p class="bug-report-meta"></p>
+        </div>
+        <span class="bug-report-severity"></span>
+      </div>
+      <p class="bug-report-details"></p>
+      <p class="bug-report-footer"></p>
+    </article>
+  </template>
+
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="app.js"></script>
+</body>
+</html>

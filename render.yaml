@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: bench-atlas
+    runtime: python
+    plan: starter
+    autoDeploy: true
+    healthCheckPath: /api/config
+    startCommand: python server.py
+    disk:
+      name: bench-atlas-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
+    envVars:
+      - key: APP_DATA_DIR
+        value: /opt/render/project/src/data
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: GOOGLE_CLIENT_ID
+        sync: false
